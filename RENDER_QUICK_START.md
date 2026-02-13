@@ -13,7 +13,7 @@
 3. **"Connect"** click karo
 
 ### Step 3: Configure
-- **Name:** `the-system-bot`
+- **Name:** `the-system`
 - **Environment:** `Node`
 - **Build Command:** `npm install`
 - **Start Command:** `node index.js`

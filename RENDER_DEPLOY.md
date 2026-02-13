@@ -37,7 +37,7 @@ Complete step-by-step guide to deploy your Discord bot on Render.
 
 Fill these details:
 
-- **Name:** `the-system-bot` (ya apna naam)
+- **Name:** `the-system`
 - **Region:** Choose closest to you (e.g., `Oregon (US West)`)
 - **Branch:** `main` (default)
 - **Root Directory:** Leave empty (root se run hoga)

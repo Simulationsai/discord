@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: the-system-bot
+    name: the-system
     env: node
     buildCommand: npm install
     startCommand: node index.js
