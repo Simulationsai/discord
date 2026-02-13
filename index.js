@@ -9,7 +9,7 @@
  * - Form submission handling
  */
 
-import { Client, GatewayIntentBits, Collection, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits, ChannelType } from 'discord.js';
 import dotenv from 'dotenv';
 import { config } from './config.js';
 
@@ -427,7 +427,234 @@ async function processRoleAssignment(member) {
 }
 
 /**
- * Handle messages - XP system and link filtering
+ * Setup Discord Server - Create all roles and channels
+ */
+async function setupDiscordServer(guild, statusChannel) {
+  const rolesConfig = [
+    { name: 'Admin', color: '#FF0000', permissions: PermissionFlagsBits.Administrator, mentionable: true, hoist: true },
+    { name: 'Moderator', color: '#FFA500', permissions: PermissionFlagsBits.ManageMessages | PermissionFlagsBits.TimeoutMembers | PermissionFlagsBits.ViewAuditLog, mentionable: true, hoist: true },
+    { name: 'Early Access', color: '#FFD700', permissions: 0n, mentionable: true, hoist: true },
+    { name: 'Waitlist', color: '#0099FF', permissions: 0n, mentionable: true, hoist: true },
+    { name: 'Form Submitted', color: '#808080', permissions: 0n, mentionable: false, hoist: false },
+    { name: 'Verified', color: '#00FF00', permissions: 0n, mentionable: false, hoist: false },
+    { name: 'Unverified', color: '#808080', permissions: 0n, mentionable: false, hoist: false }
+  ];
+
+  const channelsConfig = [
+    {
+      category: 'Welcome',
+      channels: [
+        { name: 'welcome', topic: 'Welcome to THE SYSTEM! Read the rules and verify yourself.', permissions: { everyone: { ViewChannel: true, SendMessages: false }, unverified: { ViewChannel: true, SendMessages: false }, verified: { ViewChannel: true, SendMessages: false } } },
+        { name: 'rules', topic: 'Community rules and guidelines', permissions: { everyone: { ViewChannel: true, SendMessages: false }, unverified: { ViewChannel: true, SendMessages: false }, verified: { ViewChannel: true, SendMessages: false } } },
+        { name: 'verify', topic: 'Click the button to verify your account', permissions: { everyone: { ViewChannel: false }, unverified: { ViewChannel: true, SendMessages: false }, verified: { ViewChannel: true, SendMessages: false } } }
+      ]
+    },
+    {
+      category: 'Registration',
+      channels: [
+        { name: 'submit-access-form', topic: 'Submit your access form here', permissions: { everyone: { ViewChannel: false }, verified: { ViewChannel: true, SendMessages: false } } }
+      ]
+    },
+    {
+      category: 'Announcements',
+      channels: [
+        { name: 'announcements', topic: 'Important announcements', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: false }, waitlist: { ViewChannel: true, SendMessages: false }, admin: { ViewChannel: true, SendMessages: true }, moderator: { ViewChannel: true, SendMessages: true } } }
+      ]
+    },
+    {
+      category: 'Community',
+      channels: [
+        { name: 'general', topic: 'General discussion', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true }, waitlist: { ViewChannel: true, SendMessages: true } } }
+      ]
+    },
+    {
+      category: 'Engagement',
+      channels: [
+        { name: 'engage', topic: 'Share Twitter/X links here to earn XP!', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true }, waitlist: { ViewChannel: true, SendMessages: true } } }
+      ]
+    },
+    {
+      category: 'Early Access',
+      channels: [
+        { name: 'early-access-chat', topic: 'Exclusive chat for Early Access members', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true } } }
+      ]
+    },
+    {
+      category: 'Moderation',
+      channels: [
+        { name: 'logs', topic: 'Bot action logs', permissions: { everyone: { ViewChannel: false }, admin: { ViewChannel: true }, moderator: { ViewChannel: true } } },
+        { name: 'reports', topic: 'Security reports and incidents', permissions: { everyone: { ViewChannel: false }, admin: { ViewChannel: true }, moderator: { ViewChannel: true } } },
+        { name: 'form-logs', topic: 'Form submission logs', permissions: { everyone: { ViewChannel: false }, admin: { ViewChannel: true }, moderator: { ViewChannel: true } } }
+      ]
+    }
+  ];
+
+  const createdRoles = {};
+  const createdChannels = {};
+
+  try {
+    // Step 1: Create roles
+    await statusChannel.send('📋 **Step 1:** Creating roles...');
+    const existingRoles = await guild.roles.fetch();
+    
+    for (const roleConfig of rolesConfig) {
+      const existing = existingRoles.find(r => r.name === roleConfig.name);
+      if (existing) {
+        createdRoles[roleConfig.name.toLowerCase().replace(/\s+/g, '_')] = existing.id;
+        continue;
+      }
+
+      try {
+        const role = await guild.roles.create({
+          name: roleConfig.name,
+          color: roleConfig.color,
+          permissions: roleConfig.permissions,
+          mentionable: roleConfig.mentionable,
+          hoist: roleConfig.hoist,
+          reason: 'THE SYSTEM automated setup'
+        });
+        createdRoles[roleConfig.name.toLowerCase().replace(/\s+/g, '_')] = role.id;
+        await statusChannel.send(`  ✅ Created role: ${roleConfig.name}`);
+      } catch (error) {
+        await statusChannel.send(`  ❌ Failed to create role "${roleConfig.name}": ${error.message}`);
+      }
+    }
+
+    // Step 2: Create channels
+    await statusChannel.send('📋 **Step 2:** Creating channels...');
+    
+    for (const categoryConfig of channelsConfig) {
+      let category = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === categoryConfig.category);
+      
+      if (!category) {
+        try {
+          category = await guild.channels.create({
+            name: categoryConfig.category,
+            type: ChannelType.GuildCategory,
+            reason: 'THE SYSTEM setup'
+          });
+          await statusChannel.send(`  ✅ Created category: ${categoryConfig.category}`);
+        } catch (error) {
+          await statusChannel.send(`  ❌ Failed to create category "${categoryConfig.category}": ${error.message}`);
+          continue;
+        }
+      }
+
+      for (const channelConfig of categoryConfig.channels) {
+        const existing = guild.channels.cache.find(c => c.name === channelConfig.name && c.parentId === category.id);
+        if (existing) {
+          createdChannels[channelConfig.name.toUpperCase().replace(/-/g, '_')] = existing.id;
+          continue;
+        }
+
+        try {
+          const channel = await guild.channels.create({
+            name: channelConfig.name,
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: channelConfig.topic,
+            reason: 'THE SYSTEM setup'
+          });
+          createdChannels[channelConfig.name.toUpperCase().replace(/-/g, '_')] = channel.id;
+          await statusChannel.send(`    ✅ Created channel: #${channelConfig.name}`);
+
+          // Set permissions
+          const everyoneRole = guild.roles.everyone;
+          const permissions = channelConfig.permissions;
+
+          if (permissions.everyone) {
+            await channel.permissionOverwrites.edit(everyoneRole, permissions.everyone);
+          }
+
+          const roleMap = {
+            unverified: createdRoles.unverified,
+            verified: createdRoles.verified,
+            earlyAccess: createdRoles.early_access,
+            waitlist: createdRoles.waitlist,
+            admin: createdRoles.admin,
+            moderator: createdRoles.moderator
+          };
+
+          for (const [key, roleId] of Object.entries(roleMap)) {
+            if (roleId && permissions[key]) {
+              const role = guild.roles.cache.get(roleId);
+              if (role) {
+                await channel.permissionOverwrites.edit(role, permissions[key]);
+              }
+            }
+          }
+
+          const botMember = guild.members.me;
+          await channel.permissionOverwrites.edit(botMember, {
+            ViewChannel: true,
+            SendMessages: true,
+            EmbedLinks: true,
+            ManageMessages: true
+          });
+        } catch (error) {
+          await statusChannel.send(`    ❌ Failed to create channel "#${channelConfig.name}": ${error.message}`);
+        }
+      }
+    }
+
+    // Step 3: Update config.js with IDs
+    await statusChannel.send('📋 **Step 3:** Generating config update...');
+    
+    const configUpdate = `\`\`\`javascript
+export const config = {
+  roles: {
+    ADMIN: '${createdRoles.admin || 'YOUR_ADMIN_ROLE_ID'}',
+    MODERATOR: '${createdRoles.moderator || 'YOUR_MODERATOR_ROLE_ID'}',
+    EARLY_ACCESS: '${createdRoles.early_access || 'YOUR_EARLY_ACCESS_ROLE_ID'}',
+    WAITLIST: '${createdRoles.waitlist || 'YOUR_WAITLIST_ROLE_ID'}',
+    FORM_SUBMITTED: '${createdRoles.form_submitted || 'YOUR_FORM_SUBMITTED_ROLE_ID'}',
+    VERIFIED: '${createdRoles.verified || 'YOUR_VERIFIED_ROLE_ID'}',
+    UNVERIFIED: '${createdRoles.unverified || 'YOUR_UNVERIFIED_ROLE_ID}'
+  },
+  channels: {
+    WELCOME: '${createdChannels.WELCOME || 'YOUR_WELCOME_CHANNEL_ID'}',
+    RULES: '${createdChannels.RULES || 'YOUR_RULES_CHANNEL_ID'}',
+    VERIFY: '${createdChannels.VERIFY || 'YOUR_VERIFY_CHANNEL_ID'}',
+    SUBMIT_FORM: '${createdChannels.SUBMIT_ACCESS_FORM || 'YOUR_SUBMIT_FORM_CHANNEL_ID'}',
+    ANNOUNCEMENTS: '${createdChannels.ANNOUNCEMENTS || 'YOUR_ANNOUNCEMENTS_CHANNEL_ID'}',
+    GENERAL: '${createdChannels.GENERAL || 'YOUR_GENERAL_CHANNEL_ID'}',
+    ENGAGE: '${createdChannels.ENGAGE || 'YOUR_ENGAGE_CHANNEL_ID'}',
+    EARLY_ACCESS_CHAT: '${createdChannels.EARLY_ACCESS_CHAT || 'YOUR_EARLY_ACCESS_CHAT_CHANNEL_ID'}',
+    LOGS: '${createdChannels.LOGS || 'YOUR_LOGS_CHANNEL_ID'}',
+    REPORTS: '${createdChannels.REPORTS || 'YOUR_REPORTS_CHANNEL_ID'}',
+    FORM_LOGS: '${createdChannels.FORM_LOGS || 'YOUR_FORM_LOGS_CHANNEL_ID}'
+  },
+  limits: {
+    EARLY_ACCESS_MAX: 500,
+    WAITLIST_MAX: 10000
+  },
+  xp: {
+    ENABLED_CHANNEL: '${createdChannels.ENGAGE || 'YOUR_ENGAGE_CHANNEL_ID'}',
+    XP_PER_POST: 10,
+    COOLDOWN_SECONDS: 120,
+    PROMOTION_THRESHOLD: 1000
+  },
+  linkRegex: /https?:\\/\\/(www\\.)?(twitter\\.com|x\\.com)\\/[A-Za-z0-9_]+\\/status\\/[0-9]+/,
+  form: {
+    MAX_SUBMISSIONS_PER_USER: 1,
+    REQUIRED_FIELDS: ['wallet', 'email', 'twitter', 'telegram', 'checkbox']
+  }
+};
+\`\`\`
+
+**Copy this config and update your config.js file, then restart the bot!**`;
+
+    await statusChannel.send(configUpdate);
+    await statusChannel.send('🎉 **Server setup complete!** All roles and channels have been created. Update config.js with the IDs above and restart the bot.');
+
+  } catch (error) {
+    await statusChannel.send(`❌ **Error during setup:** ${error.message}`);
+    console.error('Setup error:', error);
+  }
+}
+
+/**
+ * Handle messages - XP system, link filtering, and setup command
  */
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -435,6 +662,18 @@ client.on('messageCreate', async (message) => {
 
   const member = message.member;
   if (!member) return;
+
+  // Setup command (Admin only)
+  if (message.content.toLowerCase() === '!setup' || message.content.toLowerCase() === '!setup-server') {
+    // Check if user has admin permissions
+    if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return message.reply('❌ Only administrators can run setup command.');
+    }
+
+    await message.reply('🚀 Starting server setup... This may take a few minutes.');
+    await setupDiscordServer(message.guild, message.channel);
+    return;
+  }
 
   // Link filtering in #engage channel
   if (message.channel.id === config.channels.ENGAGE) {
