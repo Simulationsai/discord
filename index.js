@@ -37,6 +37,32 @@ client.once('clientReady', async () => {
   console.log(`✅ THE SYSTEM Bot is online as ${client.user.tag}`);
   console.log(`📊 Monitoring ${client.guilds.cache.size} server(s)`);
   
+  // Auto-setup if channels/roles don't exist
+  const guild = client.guilds.cache.first();
+  if (guild) {
+    const verifyChannel = guild.channels.cache.find(c => c.name === 'verify');
+    const unverifiedRole = guild.roles.cache.find(r => r.name === 'Unverified');
+    
+    if (!verifyChannel || !unverifiedRole) {
+      console.log('🔧 Auto-setup: Channels/roles not found. Starting automatic setup...');
+      try {
+        // Find a channel to send setup messages (use general or first text channel)
+        const setupChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === 'general') || 
+                           guild.channels.cache.find(c => c.type === ChannelType.GuildText);
+        
+        if (setupChannel) {
+          await setupChannel.send('🚀 **Auto-Setup Starting...** Bot detected missing channels/roles. Setting up automatically...');
+          await setupDiscordServer(guild, setupChannel);
+        } else {
+          console.log('⚠️  No channel found for setup messages. Please run !setup command manually.');
+        }
+      } catch (error) {
+        console.error('❌ Auto-setup failed:', error);
+        console.log('💡 Please run !setup command manually in Discord.');
+      }
+    }
+  }
+  
   // Sync existing members
   await syncExistingMembers();
 });
