@@ -467,7 +467,7 @@ async function processRoleAssignment(member) {
 async function setupDiscordServer(guild, statusChannel) {
   const rolesConfig = [
     { name: 'Admin', color: '#FF0000', permissions: PermissionFlagsBits.Administrator, mentionable: true, hoist: true },
-    { name: 'Moderator', color: '#FFA500', permissions: PermissionFlagsBits.ManageMessages | PermissionFlagsBits.TimeoutMembers | PermissionFlagsBits.ViewAuditLog, mentionable: true, hoist: true },
+    { name: 'Moderator', color: '#FFA500', permissions: null, mentionable: true, hoist: true }, // Will be calculated below
     { name: 'Early Access', color: '#FFD700', permissions: 0n, mentionable: true, hoist: true },
     { name: 'Waitlist', color: '#0099FF', permissions: 0n, mentionable: true, hoist: true },
     { name: 'Form Submitted', color: '#808080', permissions: 0n, mentionable: false, hoist: false },
@@ -540,10 +540,19 @@ async function setupDiscordServer(guild, statusChannel) {
       }
 
       try {
+        // Calculate permissions for Moderator role (fix BigInt issue)
+        let permissions = roleConfig.permissions;
+        if (roleConfig.name === 'Moderator' && permissions === null) {
+          const msgPerm = PermissionFlagsBits.ManageMessages;
+          const timeoutPerm = PermissionFlagsBits.TimeoutMembers;
+          const auditPerm = PermissionFlagsBits.ViewAuditLog;
+          permissions = msgPerm | timeoutPerm | auditPerm;
+        }
+
         const role = await guild.roles.create({
           name: roleConfig.name,
           color: roleConfig.color,
-          permissions: roleConfig.permissions,
+          permissions: permissions,
           mentionable: roleConfig.mentionable,
           hoist: roleConfig.hoist,
           reason: 'THE SYSTEM automated setup'
