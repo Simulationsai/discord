@@ -86,10 +86,38 @@ client.once('clientReady', async () => {
   // Sync existing members
   await syncExistingMembers();
   
-  // Setup verification and form channels
-  await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
-  await setupVerificationChannel();
+  // Setup verification and form channels (with retries)
+  await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds for guild to be ready
+  
+  // Setup verification channel (critical - must always work)
+  let verifyAttempts = 0;
+  const maxVerifyAttempts = 3;
+  while (verifyAttempts < maxVerifyAttempts) {
+    try {
+      await setupVerificationChannel();
+      break; // Success
+    } catch (error) {
+      verifyAttempts++;
+      console.warn(`⚠️  Verification setup attempt ${verifyAttempts}/${maxVerifyAttempts} failed:`, error.message);
+      if (verifyAttempts < maxVerifyAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before retry
+      } else {
+        console.error('❌ Failed to setup verification channel after', maxVerifyAttempts, 'attempts');
+      }
+    }
+  }
+  
+  // Setup form channel
   await setupFormChannel();
+  
+  // Schedule periodic check to ensure verification button always exists (every 6 hours)
+  setInterval(async () => {
+    try {
+      await setupVerificationChannel();
+    } catch (error) {
+      console.error('Periodic verification check failed:', error.message);
+    }
+  }, 6 * 60 * 60 * 1000); // 6 hours
 });
 
 /**
@@ -986,29 +1014,80 @@ async function checkForScams(message) {
 
 /**
  * Setup verification button in #verify channel
+ * ALWAYS ensures verification button exists - deletes old ones if needed
  */
 async function setupVerificationChannel() {
   const guild = client.guilds.cache.first();
-  if (!guild) return;
-
-  const verifyChannel = await guild.channels.fetch(config.channels.VERIFY).catch(() => null);
-  if (!verifyChannel) {
-    console.warn('⚠️  Verify channel not found');
+  if (!guild) {
+    console.warn('⚠️  No guild found for verification setup');
     return;
   }
 
-  // Check if message already exists
-  const messages = await verifyChannel.messages.fetch({ limit: 10 });
-  const existingMessage = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0);
-
-  if (existingMessage) {
-    console.log('✅ Verification message already exists');
+  let verifyChannel;
+  try {
+    verifyChannel = await guild.channels.fetch(config.channels.VERIFY).catch(() => null);
+    if (!verifyChannel) {
+      // Try finding by name as fallback
+      verifyChannel = guild.channels.cache.find(c => c.name === 'verify' && c.type === ChannelType.GuildText);
+      if (!verifyChannel) {
+        console.warn('⚠️  Verify channel not found. Run !setup to create channels.');
+        return;
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error fetching verify channel:', error.message);
     return;
   }
 
-  const embed = new EmbedBuilder()
-    .setTitle('🔐 Verification Required')
-    .setDescription(`
+  try {
+    // Fetch ALL messages from bot (up to 100) to find verification messages
+    const messages = await verifyChannel.messages.fetch({ limit: 100 });
+    const botMessages = messages.filter(m => m.author.id === client.user.id);
+    
+    // Find messages with verify button
+    const verifyMessages = botMessages.filter(m => 
+      m.components.length > 0 && 
+      m.components.some(row => 
+        row.components.some(btn => btn.customId === 'verify_button')
+      )
+    );
+
+    // Delete old verification messages (keep only the latest)
+    if (verifyMessages.size > 0) {
+      const sortedMessages = Array.from(verifyMessages.values()).sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+      // Keep the latest, delete others
+      for (let i = 1; i < sortedMessages.length; i++) {
+        try {
+          await sortedMessages[i].delete();
+          console.log(`🗑️  Deleted old verification message`);
+        } catch (e) {
+          console.warn('Could not delete old message:', e.message);
+        }
+      }
+      
+      // If latest message exists and is recent (less than 7 days old), keep it
+      const latestMessage = sortedMessages[0];
+      const messageAge = Date.now() - latestMessage.createdTimestamp;
+      const sevenDays = 7 * 24 * 60 * 60 * 1000;
+      
+      if (messageAge < sevenDays) {
+        console.log('✅ Verification button already exists and is recent');
+        return;
+      } else {
+        // Message is old, delete it and create new one
+        try {
+          await latestMessage.delete();
+          console.log('🗑️  Deleted old verification message (>7 days)');
+        } catch (e) {
+          console.warn('Could not delete old message:', e.message);
+        }
+      }
+    }
+
+    // Create new verification message
+    const embed = new EmbedBuilder()
+      .setTitle('🔐 Verification Required')
+      .setDescription(`
 Click the button below to verify your account.
 
 **Requirements:**
@@ -1016,39 +1095,104 @@ Click the button below to verify your account.
 • No alt accounts allowed
 
 After verification, you'll be able to submit the access form.
-    `)
-    .setColor(0x5865F2)
-    .setTimestamp();
+      `)
+      .setColor(0x5865F2)
+      .setTimestamp();
 
-  const row = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('verify_button')
-        .setLabel('Verify Me')
-        .setStyle(ButtonStyle.Success)
-    );
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId('verify_button')
+          .setLabel('Verify Me')
+          .setStyle(ButtonStyle.Success)
+      );
 
-  await verifyChannel.send({ embeds: [embed], components: [row] });
-  console.log('✅ Verification channel setup complete');
+    await verifyChannel.send({ embeds: [embed], components: [row] });
+    console.log('✅ Verification button created in #verify channel');
+  } catch (error) {
+    console.error('❌ Error setting up verification channel:', error.message);
+    // Retry once after 5 seconds
+    setTimeout(async () => {
+      try {
+        const embed = new EmbedBuilder()
+          .setTitle('🔐 Verification Required')
+          .setDescription('Click the button below to verify your account.')
+          .setColor(0x5865F2);
+        const row = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId('verify_button')
+              .setLabel('Verify Me')
+              .setStyle(ButtonStyle.Success)
+          );
+        await verifyChannel.send({ embeds: [embed], components: [row] });
+        console.log('✅ Verification button created (retry successful)');
+      } catch (retryError) {
+        console.error('❌ Retry failed:', retryError.message);
+      }
+    }, 5000);
+  }
 }
 
 /**
  * Setup form submission button in #submit-access-form channel
+ * ALWAYS ensures form button exists
  */
 async function setupFormChannel() {
   const guild = client.guilds.cache.first();
   if (!guild) return;
 
-  const formChannel = await guild.channels.fetch(config.channels.SUBMIT_FORM).catch(() => null);
-  if (!formChannel) return;
-
-  // Check if message already exists
-  const messages = await formChannel.messages.fetch({ limit: 10 });
-  const existingMessage = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0);
-
-  if (existingMessage) {
-    console.log('✅ Form submission message already exists');
+  let formChannel;
+  try {
+    formChannel = await guild.channels.fetch(config.channels.SUBMIT_FORM).catch(() => null);
+    if (!formChannel) {
+      formChannel = guild.channels.cache.find(c => c.name === 'submit-access-form' && c.type === ChannelType.GuildText);
+      if (!formChannel) {
+        console.warn('⚠️  Form channel not found');
+        return;
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching form channel:', error.message);
     return;
+  }
+
+  try {
+    // Fetch messages to find existing form button
+    const messages = await formChannel.messages.fetch({ limit: 100 });
+    const botMessages = messages.filter(m => m.author.id === client.user.id);
+    
+    const formMessages = botMessages.filter(m => 
+      m.components.length > 0 && 
+      m.components.some(row => 
+        row.components.some(btn => btn.customId === 'submit_form_button')
+      )
+    );
+
+    // Keep only the latest form message
+    if (formMessages.size > 0) {
+      const sortedMessages = Array.from(formMessages.values()).sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+      for (let i = 1; i < sortedMessages.length; i++) {
+        try {
+          await sortedMessages[i].delete();
+        } catch (e) {}
+      }
+      
+      const latestMessage = sortedMessages[0];
+      const messageAge = Date.now() - latestMessage.createdTimestamp;
+      const sevenDays = 7 * 24 * 60 * 60 * 1000;
+      
+      if (messageAge < sevenDays) {
+        console.log('✅ Form submission button already exists');
+        return;
+      } else {
+        try {
+          await latestMessage.delete();
+        } catch (e) {}
+      }
+    }
+  } catch (error) {
+    console.warn('Error checking existing form messages:', error.message);
   }
 
   const embed = new EmbedBuilder()
