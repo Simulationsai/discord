@@ -244,35 +244,67 @@ function accountAgeDays(user) {
 }
 
 async function handleVerifyInteraction(interaction) {
-  const guild = interaction.guild;
-  const member = interaction.member;
-  if (!guild || !member) return;
+  try {
+    const guild = interaction.guild;
+    const member = interaction.member;
+    
+    if (!guild || !member) {
+      await interaction.reply({
+        content: "❌ Error: Could not find server or member information.",
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
 
-  const minDays = Number(config.verification.MIN_ACCOUNT_AGE_DAYS || 7);
-  const age = accountAgeDays(interaction.user);
-  if (age < minDays) {
-    await interaction.reply({
-      content: `Verification denied. Your account must be at least **${minDays} days** old.`,
-      ephemeral: true
+    const minDays = Number(config.verification.MIN_ACCOUNT_AGE_DAYS || 7);
+    const age = accountAgeDays(interaction.user);
+    if (age < minDays) {
+      await interaction.reply({
+        content: `❌ Verification denied. Your account must be at least **${minDays} days** old.`,
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    const verified = resolveRole(guild, "VERIFIED", "Verified");
+    const unverified = resolveRole(guild, "UNVERIFIED", "Unverified");
+    if (!verified || !unverified) {
+      await interaction.reply({
+        content: "❌ Server roles are not configured yet. Ask an admin to run `!setup`.",
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    // Defer reply first to prevent timeout
+    await interaction.deferReply({ ephemeral: true }).catch(() => null);
+
+    await member.roles.add(verified).catch((err) => {
+      console.error("Failed to add Verified role:", err);
     });
-    return;
-  }
-
-  const verified = resolveRole(guild, "VERIFIED", "Verified");
-  const unverified = resolveRole(guild, "UNVERIFIED", "Unverified");
-  if (!verified || !unverified) {
-    await interaction.reply({
-      content: "Server roles are not configured yet. Ask an admin to run `!setup`.",
-      ephemeral: true
+    await member.roles.remove(unverified).catch((err) => {
+      console.error("Failed to remove Unverified role:", err);
     });
-    return;
+
+    await interaction.editReply({ content: "✅ Verified! Proceed to the access form." }).catch(() => null);
+    await logAction(guild, "User Verified", `${interaction.user.tag} (\`${interaction.user.id}\`) verified.`).catch(() => null);
+  } catch (error) {
+    console.error("Error in handleVerifyInteraction:", error);
+    try {
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({
+          content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again or contact an admin.`
+        }).catch(() => null);
+      } else {
+        await interaction.reply({
+          content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again or contact an admin.`,
+          ephemeral: true
+        }).catch(() => null);
+      }
+    } catch (replyError) {
+      console.error("Failed to reply to interaction:", replyError);
+    }
   }
-
-  await member.roles.add(verified).catch(() => null);
-  await member.roles.remove(unverified).catch(() => null);
-
-  await interaction.reply({ content: "Verified. Proceed to the access form.", ephemeral: true });
-  await logAction(guild, "User Verified", `${interaction.user.tag} (\`${interaction.user.id}\`) verified.`);
 }
 
 function validateEmail(email) {
@@ -871,11 +903,12 @@ client.on("guildMemberAdd", async (member) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  if (interaction.isButton()) {
-    if (interaction.customId === CUSTOM_IDS.VERIFY_BUTTON) {
-      await handleVerifyInteraction(interaction);
-      return;
-    }
+  try {
+    if (interaction.isButton()) {
+      if (interaction.customId === CUSTOM_IDS.VERIFY_BUTTON) {
+        await handleVerifyInteraction(interaction);
+        return;
+      }
 
     if (interaction.customId === CUSTOM_IDS.OPEN_FORM_BUTTON) {
       if (storage.hasSubmittedForm(interaction.user.id)) {
@@ -936,9 +969,28 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  if (interaction.isModalSubmit()) {
-    if (interaction.customId === CUSTOM_IDS.FORM_MODAL) {
-      await handleFormModalSubmit(interaction);
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId === CUSTOM_IDS.FORM_MODAL) {
+        await handleFormModalSubmit(interaction);
+      }
+    }
+  } catch (error) {
+    console.error("Error in interactionCreate:", error);
+    if (interaction.isButton() || interaction.isModalSubmit()) {
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again or contact an admin."
+          }).catch(() => null);
+        } else {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again or contact an admin.",
+            ephemeral: true
+          }).catch(() => null);
+        }
+      } catch (replyError) {
+        console.error("Failed to send error reply:", replyError);
+      }
     }
   }
 });
