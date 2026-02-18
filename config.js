@@ -25,6 +25,8 @@ export const config = {
     SUBMIT_FORM: '1471896812066570508',
     ANNOUNCEMENTS: '1471896833684013218',
     GENERAL: '1471896841724625050',
+    GM: '', // Good Morning — run !setup to create, then paste ID here
+    GN: '', // Good Night — run !setup to create, then paste ID here
     ENGAGE: '1471896848917729483',
     EARLY_ACCESS_CHAT: '1471896857243422863',
     LOGS: '1471896865049153714',

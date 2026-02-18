@@ -12,6 +12,7 @@
 import { Client, GatewayIntentBits, Collection, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits, ChannelType } from 'discord.js';
 import dotenv from 'dotenv';
 import { config } from './config.js';
+import { initStorage, saveFormSubmission, loadSubmittedUserIds } from './storage.js';
 
 dotenv.config();
 
@@ -36,6 +37,16 @@ const formSubmissions = new Set(); // Track who has submitted forms
 client.once('clientReady', async () => {
   console.log(`✅ THE SYSTEM Bot is online as ${client.user.tag}`);
   console.log(`📊 Monitoring ${client.guilds.cache.size} server(s)`);
+  
+  // Initialize storage (Google Sheet / SQLite)
+  await initStorage();
+  
+  // Load previously submitted form user IDs from storage
+  const submittedIds = loadSubmittedUserIds();
+  submittedIds.forEach(id => formSubmissions.add(id));
+  if (submittedIds.length > 0) {
+    console.log(`📋 Loaded ${submittedIds.length} form submissions from storage`);
+  }
   
   // Auto-setup if channels/roles don't exist
   const guild = client.guilds.cache.first();
@@ -74,6 +85,11 @@ client.once('clientReady', async () => {
   
   // Sync existing members
   await syncExistingMembers();
+  
+  // Setup verification and form channels
+  await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+  await setupVerificationChannel();
+  await setupFormChannel();
 });
 
 /**
@@ -173,14 +189,27 @@ client.on('interactionCreate', async (interaction) => {
  * Handle verification process
  */
 async function handleVerification(interaction) {
+  // Defer reply immediately to prevent timeout
+  try {
+    await interaction.deferReply({ ephemeral: true });
+  } catch (e) {
+    console.error('Failed to defer reply:', e);
+    return;
+  }
+
   const member = interaction.member;
   const guild = interaction.guild;
 
+  if (!member || !guild) {
+    return interaction.editReply({
+      content: '❌ Error: Member or guild not found.'
+    });
+  }
+
   // Check if already verified
   if (member.roles.cache.has(config.roles.VERIFIED)) {
-    return interaction.reply({
-      content: '✅ You are already verified!',
-      ephemeral: true
+    return interaction.editReply({
+      content: '✅ You are already verified!'
     });
   }
 
@@ -189,9 +218,8 @@ async function handleVerification(interaction) {
   const daysOld = accountAge / (1000 * 60 * 60 * 24);
 
   if (daysOld < 7) {
-    return interaction.reply({
-      content: '❌ Account must be at least 7 days old to verify. This helps prevent alt accounts.',
-      ephemeral: true
+    return interaction.editReply({
+      content: '❌ Account must be at least 7 days old to verify. This helps prevent alt accounts.'
     });
   }
 
@@ -200,8 +228,46 @@ async function handleVerification(interaction) {
     const verifiedRole = await guild.roles.fetch(config.roles.VERIFIED).catch(() => null);
     const unverifiedRole = await guild.roles.fetch(config.roles.UNVERIFIED).catch(() => null);
 
-    if (verifiedRole) await member.roles.add(verifiedRole);
-    if (unverifiedRole) await member.roles.remove(unverifiedRole);
+    if (!verifiedRole) {
+      return interaction.editReply({
+        content: '❌ Verified role not found. Please contact an admin.'
+      });
+    }
+
+    // Check bot permissions
+    const botMember = guild.members.me;
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      return interaction.editReply({
+        content: '❌ Bot does not have permission to manage roles. Please contact an admin.'
+      });
+    }
+
+    // Ensure bot role is above the roles it's trying to assign
+    if (botMember.roles.highest.position <= verifiedRole.position) {
+      return interaction.editReply({
+        content: '❌ Bot role must be higher than Verified role. Please contact an admin.'
+      });
+    }
+
+    if (unverifiedRole && botMember.roles.highest.position <= unverifiedRole.position) {
+      return interaction.editReply({
+        content: '❌ Bot role must be higher than Unverified role. Please contact an admin.'
+      });
+    }
+
+    // Add/remove roles
+    if (verifiedRole) {
+      await member.roles.add(verifiedRole).catch(e => {
+        console.error('Failed to add Verified role:', e);
+        throw new Error('Failed to add Verified role');
+      });
+    }
+    if (unverifiedRole) {
+      await member.roles.remove(unverifiedRole).catch(e => {
+        console.error('Failed to remove Unverified role:', e);
+        // Don't throw - removing unverified is less critical
+      });
+    }
 
     logAction('VERIFICATION', `${member.user.tag} (${member.id}) verified`);
 
@@ -226,17 +292,19 @@ Click the button below to open the form.
           .setStyle(ButtonStyle.Primary)
       );
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [embed],
-      components: [row],
-      ephemeral: true
+      components: [row]
     });
   } catch (error) {
     console.error('Verification error:', error);
-    await interaction.reply({
-      content: '❌ Error during verification. Please contact an admin.',
-      ephemeral: true
-    });
+    try {
+      await interaction.editReply({
+        content: `❌ Error during verification: ${error.message}\n\n**Common fixes:**\n1. Ensure bot has "Manage Roles" permission\n2. Ensure bot role is above Verified/Unverified roles\n3. Contact an admin if issue persists.`
+      });
+    } catch (e) {
+      console.error('Failed to send error reply:', e);
+    }
   }
 }
 
@@ -383,8 +451,11 @@ async function handleFormSubmission(interaction) {
       await member.roles.add(formSubmittedRole);
     }
 
-    // Log submission
+    // Log submission to Discord channel
     logFormSubmission(interaction.user, { wallet, email, twitter, telegram });
+    
+    // Save to storage (Google Sheet / SQLite)
+    await saveFormSubmission(interaction.user.id, interaction.user.tag, { wallet, email, twitter, telegram });
 
     // Process role assignment
     await processRoleAssignment(member);
@@ -499,7 +570,9 @@ async function setupDiscordServer(guild, statusChannel) {
     {
       category: 'Community',
       channels: [
-        { name: 'general', topic: 'General discussion', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true }, waitlist: { ViewChannel: true, SendMessages: true } } }
+        { name: 'general', topic: 'General discussion', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true }, waitlist: { ViewChannel: true, SendMessages: true } } },
+        { name: 'gm', topic: '☀️ Good Morning! Start your day here — say GM and connect with the community', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true }, waitlist: { ViewChannel: true, SendMessages: true } } },
+        { name: 'gn', topic: '🌙 Good Night! Wind down and say GN before you sleep', permissions: { everyone: { ViewChannel: false }, earlyAccess: { ViewChannel: true, SendMessages: true }, waitlist: { ViewChannel: true, SendMessages: true } } }
       ]
     },
     {
@@ -662,6 +735,8 @@ export const config = {
     SUBMIT_FORM: '${createdChannels.SUBMIT_ACCESS_FORM || 'YOUR_SUBMIT_FORM_CHANNEL_ID'}',
     ANNOUNCEMENTS: '${createdChannels.ANNOUNCEMENTS || 'YOUR_ANNOUNCEMENTS_CHANNEL_ID'}',
     GENERAL: '${createdChannels.GENERAL || 'YOUR_GENERAL_CHANNEL_ID'}',
+    GM: '${createdChannels.GM || 'YOUR_GM_CHANNEL_ID'}',
+    GN: '${createdChannels.GN || 'YOUR_GN_CHANNEL_ID'}',
     ENGAGE: '${createdChannels.ENGAGE || 'YOUR_ENGAGE_CHANNEL_ID'}',
     EARLY_ACCESS_CHAT: '${createdChannels.EARLY_ACCESS_CHAT || 'YOUR_EARLY_ACCESS_CHAT_CHANNEL_ID'}',
     LOGS: '${createdChannels.LOGS || 'YOUR_LOGS_CHANNEL_ID'}',
@@ -1052,12 +1127,7 @@ async function logFormSubmission(user, data) {
 // Simple HTTP server for Render port detection (Web Service requirement)
 import http from 'http';
 
-// Setup channels when bot is ready
-client.once('clientReady', async () => {
-  await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
-  await setupVerificationChannel();
-  await setupFormChannel();
-});
+// Note: Setup channels moved to main clientReady handler above
 
 const PORT = process.env.PORT || 3000;
 
