@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "setup": "node setup-discord-server.js"
+    "setup": "node setup-discord-server.js",
+    "setup-sheet": "node setup-sheet-headers.js"
   },
   "keywords": [
     "discord",
