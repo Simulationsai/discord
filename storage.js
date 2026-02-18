@@ -62,11 +62,12 @@ function getSqlite() {
   if (sqliteDb) return sqliteDb;
   try {
     const Database = require('better-sqlite3');
-    const db = new Database(dbPath);
     const dbPath = process.env.FORM_DB_PATH || path.join(process.cwd(), 'data', 'submissions.db');
     const dir = path.dirname(dbPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    sqliteDb = db(dbPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    sqliteDb = new Database(dbPath);
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS form_submissions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,27 +114,41 @@ export function loadSubmittedUserIds() {
 export async function saveFormSubmission(userId, userTag, data) {
   const { wallet = '', email = '', twitter = '', telegram = '' } = data;
 
-  // SQLite
+  // SQLite (always try - works automatically)
   const db = getSqlite();
   if (db) {
     try {
-      db.prepare(`
+      const stmt = db.prepare(`
         INSERT OR REPLACE INTO form_submissions (discord_user_id, discord_tag, wallet, email, twitter, telegram, submitted_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-      `).run(userId, userTag || '', wallet, email, twitter, telegram);
+      `);
+      stmt.run(userId, userTag || '', wallet, email, twitter, telegram);
+      console.log('✅ Form submission saved to SQLite');
     } catch (e) {
       console.error('SQLite save error:', e.message);
+      // Continue - Google Sheet might still work
     }
+  } else {
+    console.warn('⚠️  SQLite not available - form data will only be logged to Discord');
   }
 
   // Google Sheet (use cached doc)
   if (gsheetReady && gsheetDoc) {
     try {
       const sheet = gsheetDoc.sheetsByIndex[0];
-      const rows = await sheet.getRows({ limit: 1 });
-      if (!rows || rows.length === 0) {
+      // Check if headers exist by trying to get first row
+      let hasHeaders = false;
+      try {
+        const rows = await sheet.getRows({ limit: 1 });
+        hasHeaders = rows && rows.length > 0;
+      } catch (e) {
+        // Sheet might be empty, that's okay
+      }
+      
+      if (!hasHeaders) {
         await sheet.setHeaderRow(['Timestamp', 'Discord User', 'Discord ID', 'Wallet', 'Email', 'Twitter', 'Telegram']);
       }
+      
       await sheet.addRow({
         'Timestamp': new Date().toISOString(),
         'Discord User': userTag || '',
@@ -143,8 +158,10 @@ export async function saveFormSubmission(userId, userTag, data) {
         'Twitter': twitter,
         'Telegram': telegram
       });
+      console.log('✅ Form submission saved to Google Sheet');
     } catch (e) {
       console.error('Google Sheet save error:', e.message);
+      // Don't throw - SQLite might still work
     }
   }
 }
