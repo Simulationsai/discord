@@ -63,6 +63,13 @@ export class Storage {
         xp_awarded INTEGER NOT NULL,
         awarded_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS verification_attempts (
+        discord_user_id TEXT PRIMARY KEY,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        first_attempt_at INTEGER NOT NULL,
+        last_attempt_at INTEGER NOT NULL
+      );
     `);
 
     this._prepareStatements();
@@ -95,7 +102,21 @@ export class Storage {
       getXpMessage: this.db.prepare(
         `SELECT message_id, discord_user_id, xp_awarded FROM xp_messages WHERE message_id = ? LIMIT 1`
       ),
-      deleteXpMessage: this.db.prepare(`DELETE FROM xp_messages WHERE message_id = ?`)
+      deleteXpMessage: this.db.prepare(`DELETE FROM xp_messages WHERE message_id = ?`),
+
+      getVerificationAttempts: this.db.prepare(
+        `SELECT attempts, first_attempt_at, last_attempt_at FROM verification_attempts WHERE discord_user_id = ?`
+      ),
+      upsertVerificationAttempts: this.db.prepare(
+        `INSERT INTO verification_attempts (discord_user_id, attempts, first_attempt_at, last_attempt_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(discord_user_id) DO UPDATE SET 
+           attempts = excluded.attempts,
+           last_attempt_at = excluded.last_attempt_at`
+      ),
+      resetVerificationAttempts: this.db.prepare(
+        `DELETE FROM verification_attempts WHERE discord_user_id = ?`
+      )
     };
   }
 
@@ -181,6 +202,28 @@ export class Storage {
 
   deleteAwardedMessage(messageId) {
     this.stmt.deleteXpMessage.run(messageId);
+  }
+
+  getVerificationAttempts(discordUserId) {
+    const row = this.stmt.getVerificationAttempts.get(discordUserId);
+    if (!row) return { attempts: 0, firstAttemptAt: 0, lastAttemptAt: 0 };
+    return {
+      attempts: row.attempts ?? 0,
+      firstAttemptAt: row.first_attempt_at ?? 0,
+      lastAttemptAt: row.last_attempt_at ?? 0
+    };
+  }
+
+  recordVerificationAttempt(discordUserId) {
+    const now = Date.now();
+    const existing = this.getVerificationAttempts(discordUserId);
+    const newAttempts = existing.attempts + 1;
+    const firstAttempt = existing.firstAttemptAt || now;
+    this.stmt.upsertVerificationAttempts.run(discordUserId, newAttempts, firstAttempt, now);
+  }
+
+  resetVerificationAttempts(discordUserId) {
+    this.stmt.resetVerificationAttempts.run(discordUserId);
   }
 }
 

@@ -32,7 +32,12 @@ export default {
   },
 
   verification: {
-    MIN_ACCOUNT_AGE_DAYS: 7
+    MIN_ACCOUNT_AGE_DAYS: 7,
+    CAPTCHA_ENABLED: true,
+    CAPTCHA_TIMEOUT_SECONDS: 300, // 5 minutes
+    RATE_LIMIT_ENABLED: true,
+    RATE_LIMIT_MAX_ATTEMPTS: 3,
+    RATE_LIMIT_WINDOW_HOURS: 1 // per hour
   },
 
   xp: {

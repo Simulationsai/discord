@@ -31,8 +31,16 @@ const CUSTOM_IDS = {
   FORM_EMAIL: "system_form_email",
   FORM_TWITTER: "system_form_twitter",
   FORM_TELEGRAM: "system_form_telegram",
-  FORM_ACK: "system_form_ack"
+  FORM_ACK: "system_form_ack",
+  CAPTCHA_MODAL: "system_captcha_verify",
+  CAPTCHA_ANSWER: "system_captcha_answer"
 };
+
+// In-memory CAPTCHA storage (expires after timeout)
+const captchaStore = new Map(); // userId -> { question, answer, expiresAt }
+
+// Rate limiting storage (in-memory, cleared on restart)
+const rateLimitStore = new Map(); // userId -> { attempts: [], lastAttempt: timestamp }
 
 function safeJsonRead(filePath, fallback) {
   try {
@@ -243,6 +251,43 @@ function accountAgeDays(user) {
   return (Date.now() - created) / (1000 * 60 * 60 * 24);
 }
 
+function generateCaptcha() {
+  const num1 = Math.floor(Math.random() * 10) + 1; // 1-10
+  const num2 = Math.floor(Math.random() * 10) + 1; // 1-10
+  const answer = num1 + num2;
+  return { question: `${num1} + ${num2}`, answer };
+}
+
+function checkRateLimit(userId) {
+  if (!config.verification.RATE_LIMIT_ENABLED) return { allowed: true };
+
+  const attempts = storage.getVerificationAttempts(userId);
+  const maxAttempts = config.verification.RATE_LIMIT_MAX_ATTEMPTS || 3;
+  const windowHours = config.verification.RATE_LIMIT_WINDOW_HOURS || 1;
+  const windowMs = windowHours * 60 * 60 * 1000;
+
+  const now = Date.now();
+  const timeSinceFirstAttempt = now - attempts.firstAttemptAt;
+
+  // Reset if window has passed
+  if (attempts.firstAttemptAt > 0 && timeSinceFirstAttempt > windowMs) {
+    storage.resetVerificationAttempts(userId);
+    return { allowed: true };
+  }
+
+  // Check if exceeded max attempts
+  if (attempts.attempts >= maxAttempts) {
+    const remainingMs = windowMs - timeSinceFirstAttempt;
+    const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+    return {
+      allowed: false,
+      message: `Rate limit exceeded. You can try again in ${remainingMinutes} minute(s).`
+    };
+  }
+
+  return { allowed: true };
+}
+
 async function handleVerifyInteraction(interaction) {
   try {
     const guild = interaction.guild;
@@ -251,6 +296,16 @@ async function handleVerifyInteraction(interaction) {
     if (!guild || !member) {
       await interaction.reply({
         content: "❌ Error: Could not find server or member information.",
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    // Check rate limit
+    const rateLimit = checkRateLimit(interaction.user.id);
+    if (!rateLimit.allowed) {
+      await interaction.reply({
+        content: `❌ ${rateLimit.message}`,
         ephemeral: true
       }).catch(() => null);
       return;
@@ -276,18 +331,43 @@ async function handleVerifyInteraction(interaction) {
       return;
     }
 
-    // Defer reply first to prevent timeout
-    await interaction.deferReply({ ephemeral: true }).catch(() => null);
+    // Show CAPTCHA if enabled
+    if (config.verification.CAPTCHA_ENABLED) {
+      const captcha = generateCaptcha();
+      const timeoutMs = (config.verification.CAPTCHA_TIMEOUT_SECONDS || 300) * 1000;
+      const expiresAt = Date.now() + timeoutMs;
 
-    await member.roles.add(verified).catch((err) => {
-      console.error("Failed to add Verified role:", err);
-    });
-    await member.roles.remove(unverified).catch((err) => {
-      console.error("Failed to remove Unverified role:", err);
-    });
+      captchaStore.set(interaction.user.id, {
+        question: captcha.question,
+        answer: captcha.answer,
+        expiresAt
+      });
 
-    await interaction.editReply({ content: "✅ Verified! Proceed to the access form." }).catch(() => null);
-    await logAction(guild, "User Verified", `${interaction.user.tag} (\`${interaction.user.id}\`) verified.`).catch(() => null);
+      // Clean up expired CAPTCHAs
+      setTimeout(() => {
+        captchaStore.delete(interaction.user.id);
+      }, timeoutMs);
+
+      const modal = new ModalBuilder()
+        .setCustomId(CUSTOM_IDS.CAPTCHA_MODAL)
+        .setTitle("Verification CAPTCHA");
+
+      const answerInput = new TextInputBuilder()
+        .setCustomId(CUSTOM_IDS.CAPTCHA_ANSWER)
+        .setLabel(`What is ${captcha.question}?`)
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10)
+        .setPlaceholder("Enter the answer");
+
+      modal.addComponents(new ActionRowBuilder().addComponents(answerInput));
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // No CAPTCHA - verify directly
+    await completeVerification(interaction, guild, member);
   } catch (error) {
     console.error("Error in handleVerifyInteraction:", error);
     try {
@@ -303,6 +383,115 @@ async function handleVerifyInteraction(interaction) {
       }
     } catch (replyError) {
       console.error("Failed to reply to interaction:", replyError);
+    }
+  }
+}
+
+async function completeVerification(interaction, guild, member) {
+  try {
+    // Record attempt
+    storage.recordVerificationAttempt(interaction.user.id);
+
+    // Defer reply first to prevent timeout
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true }).catch(() => null);
+    }
+
+    const verified = resolveRole(guild, "VERIFIED", "Verified");
+    const unverified = resolveRole(guild, "UNVERIFIED", "Unverified");
+
+    await member.roles.add(verified).catch((err) => {
+      console.error("Failed to add Verified role:", err);
+    });
+    await member.roles.remove(unverified).catch((err) => {
+      console.error("Failed to remove Unverified role:", err);
+    });
+
+    // Reset rate limit on success
+    storage.resetVerificationAttempts(interaction.user.id);
+
+    const replyContent = interaction.deferred
+      ? "✅ Verified! Proceed to the access form."
+      : "✅ Verified! Proceed to the access form.";
+
+    if (interaction.deferred) {
+      await interaction.editReply({ content: replyContent }).catch(() => null);
+    } else {
+      await interaction.reply({ content: replyContent, ephemeral: true }).catch(() => null);
+    }
+
+    await logAction(guild, "User Verified", `${interaction.user.tag} (\`${interaction.user.id}\`) verified.`).catch(() => null);
+  } catch (error) {
+    console.error("Error in completeVerification:", error);
+    throw error;
+  }
+}
+
+async function handleCaptchaModalSubmit(interaction) {
+  try {
+    const guild = interaction.guild;
+    const member = interaction.member;
+
+    if (!guild || !member) {
+      await interaction.reply({
+        content: "❌ Error: Could not find server or member information.",
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    const userAnswer = interaction.fields.getTextInputValue(CUSTOM_IDS.CAPTCHA_ANSWER)?.trim();
+    const captchaData = captchaStore.get(interaction.user.id);
+
+    if (!captchaData) {
+      await interaction.reply({
+        content: "❌ CAPTCHA expired. Please click Verify Me again.",
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    // Check if expired
+    if (Date.now() > captchaData.expiresAt) {
+      captchaStore.delete(interaction.user.id);
+      await interaction.reply({
+        content: "❌ CAPTCHA expired. Please click Verify Me again.",
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    // Validate answer
+    const expectedAnswer = String(captchaData.answer);
+    const providedAnswer = String(userAnswer).replace(/\s+/g, "");
+
+    if (providedAnswer !== expectedAnswer) {
+      captchaStore.delete(interaction.user.id);
+      await interaction.reply({
+        content: `❌ Incorrect answer. The answer to "${captchaData.question}" was ${expectedAnswer}. Please try again.`,
+        ephemeral: true
+      }).catch(() => null);
+      return;
+    }
+
+    // CAPTCHA correct - complete verification
+    captchaStore.delete(interaction.user.id);
+    await completeVerification(interaction, guild, member);
+  } catch (error) {
+    console.error("Error in handleCaptchaModalSubmit:", error);
+    try {
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({
+          content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again.`
+        }).catch(() => null);
+      } else {
+        await interaction.reply({
+          content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again.`,
+          ephemeral: true
+        }).catch(() => null);
+      }
+    } catch (replyError) {
+      console.error("Failed to reply to CAPTCHA interaction:", replyError);
     }
   }
 }
@@ -910,7 +1099,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-    if (interaction.customId === CUSTOM_IDS.OPEN_FORM_BUTTON) {
+      if (interaction.customId === CUSTOM_IDS.OPEN_FORM_BUTTON) {
       if (storage.hasSubmittedForm(interaction.user.id)) {
         await interaction.reply({
           content: "Submission denied. You have already submitted the access form.",
@@ -970,6 +1159,11 @@ client.on("interactionCreate", async (interaction) => {
   }
 
     if (interaction.isModalSubmit()) {
+      if (interaction.customId === CUSTOM_IDS.CAPTCHA_MODAL) {
+        await handleCaptchaModalSubmit(interaction);
+        return;
+      }
+
       if (interaction.customId === CUSTOM_IDS.FORM_MODAL) {
         await handleFormModalSubmit(interaction);
       }
