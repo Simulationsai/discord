@@ -169,12 +169,19 @@ async function syncExistingMembers() {
 }
 
 /**
- * Handle new member joins
+ * Handle new member joins - ensure verification button exists
  */
 client.on('guildMemberAdd', async (member) => {
   if (member.user.bot) return;
 
   const guild = member.guild;
+  
+  // CRITICAL: Ensure verification button exists when new member joins
+  try {
+    await setupVerificationChannel();
+  } catch (error) {
+    console.error('Failed to ensure verification button on member join:', error.message);
+  }
   const unverifiedRole = await guild.roles.fetch(config.roles.UNVERIFIED).catch(() => null);
   
   if (unverifiedRole) {
