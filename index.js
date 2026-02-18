@@ -737,32 +737,65 @@ async function runSetup(guild, actorTag = "system") {
 async function handleCommand(message) {
   const prefix = config.commands.PREFIX || "!";
   if (!message.content?.startsWith(prefix)) return false;
-  if (!message.guild || !message.member) return false;
+  if (!message.guild || !message.member) {
+    console.log("Command ignored: no guild or member", { guild: !!message.guild, member: !!message.member });
+    return false;
+  }
   if (message.author?.bot) return false;
 
   const [cmdRaw] = message.content.slice(prefix.length).trim().split(/\s+/);
   const cmd = (cmdRaw || "").toLowerCase();
 
   if (cmd === "setup" || cmd === "setup-server") {
-    if (!isAdminish(message.member)) return true;
-    await runSetup(message.guild, message.author.tag);
-    await message.reply("Setup complete. Verification + form messages ensured.").catch(() => null);
+    if (!isAdminish(message.member)) {
+      await message.reply("❌ Permission denied. You must be a server administrator to run this command.").catch(() => null);
+      return true;
+    }
+    try {
+      await message.reply("⏳ Starting setup... This may take 30-60 seconds.").catch(() => null);
+      await runSetup(message.guild, message.author.tag);
+      await message.reply("✅ Setup complete! Verification + form messages ensured. Check #logs for details.").catch(() => null);
+    } catch (error) {
+      console.error("Setup error:", error);
+      await message.reply(`❌ Setup failed: ${error.message || "Unknown error"}. Check Render logs.`).catch(() => null);
+    }
     return true;
   }
 
   if (cmd === "fix-verify" || cmd === "fixverification") {
-    if (!isAdminish(message.member)) return true;
-    await ensureVerifyMessage(message.guild);
-    await message.reply("Verification button ensured.").catch(() => null);
+    if (!isAdminish(message.member)) {
+      await message.reply("❌ Permission denied. You must be a server administrator to run this command.").catch(() => null);
+      return true;
+    }
+    try {
+      await ensureVerifyMessage(message.guild);
+      await message.reply("✅ Verification button ensured.").catch(() => null);
+    } catch (error) {
+      console.error("Fix verify error:", error);
+      await message.reply(`❌ Failed: ${error.message || "Unknown error"}`).catch(() => null);
+    }
     return true;
   }
 
   if (cmd === "get-roles") {
-    if (!isAdminish(message.member)) return true;
-    const lines = message.guild.roles.cache
-      .sort((a, b) => b.position - a.position)
-      .map((r) => `${r.name}: ${r.id}`);
-    await message.reply(`\n${lines.join("\n")}`.slice(0, 1900)).catch(() => null);
+    if (!isAdminish(message.member)) {
+      await message.reply("❌ Permission denied. You must be a server administrator to run this command.").catch(() => null);
+      return true;
+    }
+    try {
+      const lines = message.guild.roles.cache
+        .sort((a, b) => b.position - a.position)
+        .map((r) => `${r.name}: ${r.id}`);
+      await message.reply(`\`\`\`\n${lines.join("\n")}\n\`\`\``.slice(0, 1900)).catch(() => null);
+    } catch (error) {
+      console.error("Get roles error:", error);
+      await message.reply(`❌ Failed: ${error.message || "Unknown error"}`).catch(() => null);
+    }
+    return true;
+  }
+
+  if (cmd === "ping" || cmd === "test") {
+    await message.reply("✅ Bot is online and responding! If you're an admin, use `!setup` to configure the server.").catch(() => null);
     return true;
   }
 
@@ -770,8 +803,11 @@ async function handleCommand(message) {
 }
 
 client.on("ready", async () => {
+  console.log(`✅ Bot logged in as ${client.user.tag} (${client.user.id})`);
+  console.log(`📊 Connected to ${client.guilds.cache.size} server(s)`);
+
   if (!requiredConfigPresent()) {
-    console.error("DISCORD_BOT_TOKEN missing.");
+    console.error("❌ DISCORD_BOT_TOKEN missing.");
     return;
   }
 
@@ -780,10 +816,13 @@ client.on("ready", async () => {
 
   const guild = getPrimaryGuild();
   if (guild) {
+    console.log(`🏠 Primary guild: ${guild.name} (${guild.id})`);
     await guild.members.fetch().catch(() => null);
     await ensureVerifyMessage(guild).catch(() => null);
     await ensureFormMessage(guild).catch(() => null);
-    await logAction(guild, "Bot Online", `Logged in as ${client.user.tag}.`);
+    await logAction(guild, "Bot Online", `Logged in as ${client.user.tag}.`).catch(() => null);
+  } else {
+    console.warn("⚠️  No guilds found. Make sure the bot is invited to a server.");
   }
 
   setInterval(async () => {
@@ -890,12 +929,17 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.on("messageCreate", async (message) => {
-  await handleCommand(message).catch(() => null);
+  try {
+    const handled = await handleCommand(message);
+    if (handled) return; // Command was handled, skip security/XP checks
 
-  const sec = await handleSecurity(message).catch(() => ({ action: "none" }));
-  if (sec?.action === "deleted_timeout") return;
+    const sec = await handleSecurity(message).catch(() => ({ action: "none" }));
+    if (sec?.action === "deleted_timeout") return;
 
-  await handleXp(message).catch(() => null);
+    await handleXp(message).catch(() => null);
+  } catch (error) {
+    console.error("Error in messageCreate:", error);
+  }
 });
 
 client.on("messageUpdate", async (oldMsg, newMsg) => {
