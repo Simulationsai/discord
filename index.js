@@ -27,6 +27,21 @@ const client = new Client({
   ]
 });
 
+// Handle new member joins - ensure verification button exists
+client.on('guildMemberAdd', async (member) => {
+  try {
+    // Small delay to ensure guild is ready
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Ensure verification button exists when new member joins
+    await setupVerificationChannel();
+    
+    console.log(`👤 New member joined: ${member.user.tag} - Verification button ensured`);
+  } catch (error) {
+    console.error('Error handling new member:', error.message);
+  }
+});
+
 // Data storage (in production, use a database)
 const userData = new Map(); // userId -> { xp, formSubmitted, lastXpTime, roles }
 const formSubmissions = new Set(); // Track who has submitted forms
@@ -86,7 +101,7 @@ client.once('clientReady', async () => {
   // Sync existing members
   await syncExistingMembers();
   
-  // Setup verification and form channels (with retries)
+  // Setup verification and form channels (with retries) - CRITICAL
   await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds for guild to be ready
   
   // Setup verification channel (critical - must always work)
@@ -819,6 +834,21 @@ client.on('messageCreate', async (message) => {
 
     await message.reply('🚀 Starting server setup... This may take a few minutes.');
     await setupDiscordServer(message.guild, message.channel);
+    return;
+  }
+
+  // Fix verification button command (Admin only)
+  if (message.content.toLowerCase() === '!fix-verify' || message.content.toLowerCase() === '!fixverification') {
+    if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return message.reply('❌ Only administrators can run this command.');
+    }
+    await message.reply('🔧 Fixing verification button...');
+    try {
+      await setupVerificationChannel();
+      await message.reply('✅ Verification button fixed! Check #verify channel.');
+    } catch (error) {
+      await message.reply(`❌ Error: ${error.message}`);
+    }
     return;
   }
 
