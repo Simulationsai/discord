@@ -1,175 +1,186 @@
-/**
- * Form submission storage: Google Sheet and/or SQLite
- * Set env vars to enable. At least one recommended for persistence.
- */
+import fs from "node:fs";
+import path from "node:path";
 
-import fs from 'fs';
-import path from 'path';
-import { createRequire } from 'module';
+import Database from "better-sqlite3";
+import { GoogleSpreadsheet } from "google-spreadsheet";
 
-const require = createRequire(import.meta.url);
-
-let sqliteDb = null;
-let gsheetDoc = null;
-let gsheetReady = false;
-
-function getCreds() {
-  const credsJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  const credsPath = process.env.GOOGLE_CREDENTIALS_PATH;
-  if (credsJson) {
-    try {
-      return JSON.parse(
-        process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64
-          ? Buffer.from(credsJson, 'base64').toString('utf8')
-          : credsJson
-      );
-    } catch (e) {
-      return null;
-    }
-  }
-  if (credsPath && fs.existsSync(credsPath)) {
-    return JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-  }
-  return null;
+function ensureDirForFile(filePath) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-async function initGoogleSheet() {
-  const sheetId = process.env.GOOGLE_SHEET_ID;
-  const creds = getCreds();
-  if (!sheetId || !creds) {
-    if (sheetId) console.warn('⚠️  Google Sheet: set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_CREDENTIALS_PATH');
-    return false;
+function parseServiceAccountFromEnv() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) return null;
+
+  const isBase64 =
+    String(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 || "").toLowerCase() === "true";
+
+  const jsonString = isBase64 ? Buffer.from(raw, "base64").toString("utf8") : raw;
+  return JSON.parse(jsonString);
+}
+
+function parseServiceAccountFromFile() {
+  const p = process.env.GOOGLE_CREDENTIALS_PATH;
+  if (!p) return null;
+  const jsonString = fs.readFileSync(p, "utf8");
+  return JSON.parse(jsonString);
+}
+
+export class Storage {
+  constructor({ dbPath }) {
+    this.dbPath = dbPath;
+    this.db = null;
+    this.sheet = null;
+    this.sheetEnabled = false;
   }
-  try {
-    const { GoogleSpreadsheet } = await import('google-spreadsheet');
+
+  init() {
+    ensureDirForFile(this.dbPath);
+    this.db = new Database(this.dbPath);
+    this.db.pragma("journal_mode = WAL");
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS form_submissions (
+        discord_user_id TEXT PRIMARY KEY,
+        discord_tag TEXT NOT NULL,
+        wallet TEXT NOT NULL,
+        email TEXT NOT NULL,
+        twitter TEXT NOT NULL,
+        telegram TEXT NOT NULL,
+        submitted_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS xp (
+        discord_user_id TEXT PRIMARY KEY,
+        xp INTEGER NOT NULL DEFAULT 0,
+        last_post_at INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS xp_messages (
+        message_id TEXT PRIMARY KEY,
+        discord_user_id TEXT NOT NULL,
+        xp_awarded INTEGER NOT NULL,
+        awarded_at INTEGER NOT NULL
+      );
+    `);
+
+    this._prepareStatements();
+  }
+
+  _prepareStatements() {
+    this.stmt = {
+      hasSubmission: this.db.prepare(
+        `SELECT 1 AS ok FROM form_submissions WHERE discord_user_id = ? LIMIT 1`
+      ),
+      insertSubmission: this.db.prepare(
+        `INSERT INTO form_submissions
+         (discord_user_id, discord_tag, wallet, email, twitter, telegram, submitted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ),
+      listSubmittedIds: this.db.prepare(`SELECT discord_user_id FROM form_submissions`),
+
+      getXpRow: this.db.prepare(`SELECT xp, last_post_at FROM xp WHERE discord_user_id = ?`),
+      upsertXpRow: this.db.prepare(
+        `INSERT INTO xp (discord_user_id, xp, last_post_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(discord_user_id) DO UPDATE SET xp = excluded.xp, last_post_at = excluded.last_post_at`
+      ),
+
+      hasXpMessage: this.db.prepare(`SELECT 1 AS ok FROM xp_messages WHERE message_id = ? LIMIT 1`),
+      insertXpMessage: this.db.prepare(
+        `INSERT INTO xp_messages (message_id, discord_user_id, xp_awarded, awarded_at)
+         VALUES (?, ?, ?, ?)`
+      ),
+      getXpMessage: this.db.prepare(
+        `SELECT message_id, discord_user_id, xp_awarded FROM xp_messages WHERE message_id = ? LIMIT 1`
+      ),
+      deleteXpMessage: this.db.prepare(`DELETE FROM xp_messages WHERE message_id = ?`)
+    };
+  }
+
+  async initGoogleSheetIfConfigured() {
+    const sheetId = process.env.GOOGLE_SHEET_ID;
+    if (!sheetId) return false;
+
+    const creds = parseServiceAccountFromEnv() || parseServiceAccountFromFile();
+    if (!creds) return false;
+
     const doc = new GoogleSpreadsheet(sheetId);
     await doc.useServiceAccountAuth({
       client_email: creds.client_email,
-      private_key: (creds.private_key || '').replace(/\\n/g, '\n')
+      private_key: creds.private_key
     });
     await doc.loadInfo();
-    gsheetDoc = doc;
-    gsheetReady = true;
-    console.log('✅ Google Sheet connected:', doc.title);
+
+    const sheet = doc.sheetsByIndex?.[0];
+    if (!sheet) return false;
+
+    this.sheet = sheet;
+    this.sheetEnabled = true;
     return true;
-  } catch (e) {
-    console.warn('⚠️  Google Sheet init failed:', e.message);
-    return false;
+  }
+
+  hasSubmittedForm(discordUserId) {
+    return Boolean(this.stmt.hasSubmission.get(discordUserId));
+  }
+
+  listSubmittedUserIds() {
+    return new Set(this.stmt.listSubmittedIds.all().map((r) => r.discord_user_id));
+  }
+
+  saveFormSubmission({ discordUserId, discordTag, wallet, email, twitter, telegram }) {
+    const submittedAt = Date.now();
+    this.stmt.insertSubmission.run(
+      discordUserId,
+      discordTag,
+      wallet,
+      email,
+      twitter,
+      telegram,
+      submittedAt
+    );
+    return submittedAt;
+  }
+
+  async appendFormSubmissionToSheet({ discordUserId, discordTag, wallet, email, twitter, telegram }) {
+    if (!this.sheetEnabled || !this.sheet) return false;
+    await this.sheet.addRow({
+      discord_user_id: discordUserId,
+      discord_tag: discordTag,
+      wallet,
+      email,
+      twitter,
+      telegram,
+      submitted_at: new Date().toISOString()
+    });
+    return true;
+  }
+
+  getXp(discordUserId) {
+    const row = this.stmt.getXpRow.get(discordUserId);
+    if (!row) return { xp: 0, lastPostAt: 0 };
+    return { xp: row.xp ?? 0, lastPostAt: row.last_post_at ?? 0 };
+  }
+
+  setXp(discordUserId, { xp, lastPostAt }) {
+    this.stmt.upsertXpRow.run(discordUserId, xp, lastPostAt);
+  }
+
+  hasAwardedForMessage(messageId) {
+    return Boolean(this.stmt.hasXpMessage.get(messageId));
+  }
+
+  recordAwardedMessage({ messageId, discordUserId, xpAwarded }) {
+    this.stmt.insertXpMessage.run(messageId, discordUserId, xpAwarded, Date.now());
+  }
+
+  getAwardedMessage(messageId) {
+    return this.stmt.getXpMessage.get(messageId) || null;
+  }
+
+  deleteAwardedMessage(messageId) {
+    this.stmt.deleteXpMessage.run(messageId);
   }
 }
 
-function getSqlite() {
-  if (sqliteDb) return sqliteDb;
-  try {
-    const Database = require('better-sqlite3');
-    const dbPath = process.env.FORM_DB_PATH || path.join(process.cwd(), 'data', 'submissions.db');
-    const dir = path.dirname(dbPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    sqliteDb = new Database(dbPath);
-    sqliteDb.exec(`
-      CREATE TABLE IF NOT EXISTS form_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_user_id TEXT NOT NULL,
-        discord_tag TEXT,
-        wallet TEXT,
-        email TEXT,
-        twitter TEXT,
-        telegram TEXT,
-        submitted_at TEXT DEFAULT (datetime('now'))
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_user ON form_submissions(discord_user_id);
-    `);
-    console.log('✅ SQLite storage ready:', dbPath);
-    return sqliteDb;
-  } catch (e) {
-    if (e.code === 'MODULE_NOT_FOUND') {
-      console.warn('⚠️  SQLite: install with npm install better-sqlite3');
-    } else {
-      console.warn('⚠️  SQLite init failed:', e.message);
-    }
-    return null;
-  }
-}
-
-/**
- * Load all Discord user IDs that have already submitted (for persistence across restarts)
- */
-export function loadSubmittedUserIds() {
-  const db = getSqlite();
-  if (!db) return [];
-  try {
-    const rows = db.prepare('SELECT discord_user_id FROM form_submissions').all();
-    return rows.map(r => r.discord_user_id);
-  } catch (e) {
-    console.warn('loadSubmittedUserIds error:', e.message);
-    return [];
-  }
-}
-
-/**
- * Save form submission to SQLite and/or Google Sheet
- */
-export async function saveFormSubmission(userId, userTag, data) {
-  const { wallet = '', email = '', twitter = '', telegram = '' } = data;
-
-  // SQLite (always try - works automatically)
-  const db = getSqlite();
-  if (db) {
-    try {
-      const stmt = db.prepare(`
-        INSERT OR REPLACE INTO form_submissions (discord_user_id, discord_tag, wallet, email, twitter, telegram, submitted_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-      `);
-      stmt.run(userId, userTag || '', wallet, email, twitter, telegram);
-      console.log('✅ Form submission saved to SQLite');
-    } catch (e) {
-      console.error('SQLite save error:', e.message);
-      // Continue - Google Sheet might still work
-    }
-  } else {
-    console.warn('⚠️  SQLite not available - form data will only be logged to Discord');
-  }
-
-  // Google Sheet (use cached doc)
-  if (gsheetReady && gsheetDoc) {
-    try {
-      const sheet = gsheetDoc.sheetsByIndex[0];
-      // Check if headers exist by trying to get first row
-      let hasHeaders = false;
-      try {
-        const rows = await sheet.getRows({ limit: 1 });
-        hasHeaders = rows && rows.length > 0;
-      } catch (e) {
-        // Sheet might be empty, that's okay
-      }
-      
-      if (!hasHeaders) {
-        await sheet.setHeaderRow(['Timestamp', 'Discord User', 'Discord ID', 'Wallet', 'Email', 'Twitter', 'Telegram']);
-      }
-      
-      await sheet.addRow({
-        'Timestamp': new Date().toISOString(),
-        'Discord User': userTag || '',
-        'Discord ID': userId,
-        'Wallet': wallet,
-        'Email': email,
-        'Twitter': twitter,
-        'Telegram': telegram
-      });
-      console.log('✅ Form submission saved to Google Sheet');
-    } catch (e) {
-      console.error('Google Sheet save error:', e.message);
-      // Don't throw - SQLite might still work
-    }
-  }
-}
-
-/**
- * Initialize storage: connect Google Sheet if configured
- */
-export async function initStorage() {
-  await initGoogleSheet();
-  getSqlite();
-}

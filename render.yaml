@@ -1,9 +1,12 @@
 services:
   - type: web
-    name: the-system
+    name: the-system-discord-bot
     env: node
+    plan: starter
     buildCommand: npm install
     startCommand: node index.js
     envVars:
-      - key: DISCORD_BOT_TOKEN
-        sync: false
+      - key: NODE_VERSION
+        value: 18
+      - key: PORT
+        value: 3000
