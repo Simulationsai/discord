@@ -837,15 +837,30 @@ client.on("guildMemberAdd", async (member) => {
   await assignUnverifiedIfNeeded(member);
   await ensureVerifyMessage(member.guild).catch(() => null);
 
-  const dmText = [
-    "Welcome to THE SYSTEM.",
+  const welcomeText = [
+    `Welcome to THE SYSTEM, ${member.user}!`,
     "",
-    "1) Go to #verify and click **Verify Me**",
-    "2) After verification, go to #submit-access-form and submit the inbuilt access form",
+    "**Getting Started:**",
+    "1) Go to <#verify> and click **Verify Me**",
+    "2) After verification, go to <#submit-access-form> and submit the inbuilt access form",
     "",
     "No manual approvals. No shortcuts. History is permanent."
   ].join("\n");
-  await member.send(dmText).catch(() => null);
+
+  // Try to send welcome message to welcome channel first, fallback to DM
+  const welcomeChannel = resolveChannel(member.guild, "WELCOME", "welcome");
+  if (welcomeChannel?.isTextBased?.()) {
+    try {
+      await welcomeChannel.send(welcomeText);
+    } catch (error) {
+      console.error("Failed to send welcome message to channel:", error.message);
+      // Fallback to DM (may fail silently due to user settings)
+      await member.send(welcomeText).catch(() => null);
+    }
+  } else {
+    // No welcome channel, try DM (may fail silently)
+    await member.send(welcomeText).catch(() => null);
+  }
 
   await logAction(
     member.guild,
