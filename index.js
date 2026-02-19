@@ -530,21 +530,27 @@ async function processRoleAfterForm(member) {
 }
 
 async function handleFormModalSubmit(interaction) {
+  // Defer immediately so Discord gets a response within 3 seconds
+  await interaction.deferReply({ ephemeral: true }).catch(() => null);
+
   const guild = interaction.guild;
   const member = interaction.member;
-  if (!guild || !member) return;
+
+  if (!guild || !member) {
+    await interaction.editReply({ content: "❌ Could not find server or member." }).catch(() => null);
+    return;
+  }
 
   const verified = resolveRole(guild, "VERIFIED", "Verified");
   if (verified && !member.roles.cache.has(verified.id)) {
-    await interaction.reply({ content: "You must verify first.", ephemeral: true });
+    await interaction.editReply({ content: "❌ You must verify first in #verify." }).catch(() => null);
     return;
   }
 
   if (storage.hasSubmittedForm(interaction.user.id)) {
-    await interaction.reply({
-      content: "Submission denied. You have already submitted the access form.",
-      ephemeral: true
-    });
+    await interaction.editReply({
+      content: "❌ You have already submitted the access form."
+    }).catch(() => null);
     return;
   }
 
@@ -552,38 +558,36 @@ async function handleFormModalSubmit(interaction) {
   const email = interaction.fields.getTextInputValue(CUSTOM_IDS.FORM_EMAIL)?.trim();
   const twitter = interaction.fields.getTextInputValue(CUSTOM_IDS.FORM_TWITTER)?.trim();
   const telegram = interaction.fields.getTextInputValue(CUSTOM_IDS.FORM_TELEGRAM)?.trim();
-  const ack = interaction.fields.getTextInputValue(CUSTOM_IDS.FORM_ACK)?.trim();
+  const ack = (interaction.fields.getTextInputValue(CUSTOM_IDS.FORM_ACK) || "").trim();
 
   if (!validateWallet(wallet)) {
-    await interaction.reply({ content: "Invalid wallet address.", ephemeral: true });
+    await interaction.editReply({ content: "❌ Invalid wallet address." }).catch(() => null);
     return;
   }
   if (!validateEmail(email)) {
-    await interaction.reply({ content: "Invalid email address.", ephemeral: true });
+    await interaction.editReply({ content: "❌ Invalid email address." }).catch(() => null);
     return;
   }
-  if (!twitter?.startsWith("@")) {
-    await interaction.reply({ content: "Twitter handle must start with `@`.", ephemeral: true });
+  if (!twitter || !twitter.startsWith("@")) {
+    await interaction.editReply({ content: "❌ Twitter handle must start with `@`." }).catch(() => null);
     return;
   }
-  if (!telegram?.startsWith("@")) {
-    await interaction.reply({ content: "Telegram handle must start with `@`.", ephemeral: true });
+  if (!telegram || !telegram.startsWith("@")) {
+    await interaction.editReply({ content: "❌ Telegram handle must start with `@`." }).catch(() => null);
     return;
   }
   if (!ack || ack.toLowerCase() !== "i understand") {
-    await interaction.reply({
-      content: 'Acknowledgement required. Type exactly: `I UNDERSTAND`',
-      ephemeral: true
-    });
+    await interaction.editReply({
+      content: "❌ Type exactly: **I UNDERSTAND** in the acknowledgement field."
+    }).catch(() => null);
     return;
   }
 
-  const formSubmitted = resolveRole(guild, "FORM_SUBMITTED", "Form Submitted");
-  if (!formSubmitted) {
-    await interaction.reply({
-      content: "Server roles are not configured yet. Ask an admin to run `!setup`.",
-      ephemeral: true
-    });
+  const formSubmittedRole = resolveRole(guild, "FORM_SUBMITTED", "Form Submitted");
+  if (!formSubmittedRole) {
+    await interaction.editReply({
+      content: "❌ Server not configured. Ask an admin to run `!setup`."
+    }).catch(() => null);
     return;
   }
 
@@ -597,10 +601,9 @@ async function handleFormModalSubmit(interaction) {
       telegram
     });
   } catch (e) {
-    await interaction.reply({
-      content: "Submission denied. Your user already has a stored submission.",
-      ephemeral: true
-    });
+    await interaction.editReply({
+      content: "❌ You have already submitted the form."
+    }).catch(() => null);
     return;
   }
 
@@ -613,8 +616,7 @@ async function handleFormModalSubmit(interaction) {
     telegram
   }).catch(() => null);
 
-  await member.roles.add(formSubmitted).catch(() => null);
-
+  await member.roles.add(formSubmittedRole).catch(() => null);
   const roleResult = await processRoleAfterForm(member);
 
   const embed = new EmbedBuilder()
@@ -630,23 +632,22 @@ async function handleFormModalSubmit(interaction) {
       { name: "Assigned", value: roleResult.assigned || "NONE", inline: false }
     );
 
-  await sendEmbed(guild, config.channels.FORM_LOGS, embed);
+  await sendEmbed(guild, config.channels.FORM_LOGS, embed).catch(() => null);
   await logAction(
     guild,
     "Form Submission Stored",
     `${interaction.user.tag} (\`${interaction.user.id}\`) submitted access form.`,
     [{ name: "Assigned", value: roleResult.assigned || "NONE", inline: true }]
-  );
+  ).catch(() => null);
 
-  await interaction.reply({
-    content:
-      roleResult.assigned === "EARLY_ACCESS"
-        ? "Submission accepted. You have been granted **Early Access**."
-        : roleResult.assigned === "WAITLIST"
-          ? "Submission accepted. You have been placed on the **Waitlist**."
-          : "Submission accepted. Roles are currently full.",
-    ephemeral: true
-  });
+  const successMsg =
+    roleResult.assigned === "EARLY_ACCESS"
+      ? "✅ Submission accepted. You have been granted **Early Access**."
+      : roleResult.assigned === "WAITLIST"
+        ? "✅ Submission accepted. You have been placed on the **Waitlist**."
+        : "✅ Submission accepted. Roles are currently full.";
+
+  await interaction.editReply({ content: successMsg }).catch(() => null);
 }
 
 async function handleSecurity(message) {
@@ -1093,63 +1094,73 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === CUSTOM_IDS.OPEN_FORM_BUTTON) {
-      if (storage.hasSubmittedForm(interaction.user.id)) {
-        await interaction.reply({
-          content: "Submission denied. You have already submitted the access form.",
-          ephemeral: true
-        });
+        if (storage.hasSubmittedForm(interaction.user.id)) {
+          await interaction.reply({
+            content: "❌ You have already submitted the access form.",
+            ephemeral: true
+          }).catch(() => null);
+          return;
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(CUSTOM_IDS.FORM_MODAL)
+          .setTitle("THE SYSTEM Access Form");
+
+        const wallet = new TextInputBuilder()
+          .setCustomId(CUSTOM_IDS.FORM_WALLET)
+          .setLabel("Wallet Address")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(120);
+
+        const email = new TextInputBuilder()
+          .setCustomId(CUSTOM_IDS.FORM_EMAIL)
+          .setLabel("Email Address")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(120);
+
+        const twitter = new TextInputBuilder()
+          .setCustomId(CUSTOM_IDS.FORM_TWITTER)
+          .setLabel("Twitter (start with @)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(40);
+
+        const telegram = new TextInputBuilder()
+          .setCustomId(CUSTOM_IDS.FORM_TELEGRAM)
+          .setLabel("Telegram (start with @)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(40);
+
+        const ack = new TextInputBuilder()
+          .setCustomId(CUSTOM_IDS.FORM_ACK)
+          .setLabel("Type: I UNDERSTAND")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(20);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(wallet),
+          new ActionRowBuilder().addComponents(email),
+          new ActionRowBuilder().addComponents(twitter),
+          new ActionRowBuilder().addComponents(telegram),
+          new ActionRowBuilder().addComponents(ack)
+        );
+
+        try {
+          await interaction.showModal(modal);
+        } catch (err) {
+          console.error("Open Form showModal error:", err);
+          await interaction.reply({
+            content: "❌ Could not open form. Please try again.",
+            ephemeral: true
+          }).catch(() => null);
+        }
         return;
       }
-
-      const modal = new ModalBuilder().setCustomId(CUSTOM_IDS.FORM_MODAL).setTitle("THE SYSTEM Access Form");
-
-      const wallet = new TextInputBuilder()
-        .setCustomId(CUSTOM_IDS.FORM_WALLET)
-        .setLabel("Wallet Address")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(120);
-
-      const email = new TextInputBuilder()
-        .setCustomId(CUSTOM_IDS.FORM_EMAIL)
-        .setLabel("Email Address")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(120);
-
-      const twitter = new TextInputBuilder()
-        .setCustomId(CUSTOM_IDS.FORM_TWITTER)
-        .setLabel("Twitter Handle (must start with @)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(40);
-
-      const telegram = new TextInputBuilder()
-        .setCustomId(CUSTOM_IDS.FORM_TELEGRAM)
-        .setLabel("Telegram Handle (must start with @)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(40);
-
-      const ack = new TextInputBuilder()
-        .setCustomId(CUSTOM_IDS.FORM_ACK)
-        .setLabel('Type: "I UNDERSTAND" (never share private keys)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(20);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(wallet),
-        new ActionRowBuilder().addComponents(email),
-        new ActionRowBuilder().addComponents(twitter),
-        new ActionRowBuilder().addComponents(telegram),
-        new ActionRowBuilder().addComponents(ack)
-      );
-
-      await interaction.showModal(modal);
-      return;
     }
-  }
 
     if (interaction.isModalSubmit()) {
       if (interaction.customId === CUSTOM_IDS.CAPTCHA_MODAL) {
