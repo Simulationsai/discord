@@ -1186,15 +1186,11 @@ client.on("interactionCreate", async (interaction) => {
     console.error("Error in interactionCreate:", error);
     if (interaction.isButton() || interaction.isModalSubmit()) {
       try {
+        const errMsg = "❌ An error occurred. Please try again or contact an admin. _(You can dismiss this message below.)_";
         if (interaction.replied || interaction.deferred) {
-          await interaction.editReply({
-            content: "❌ An error occurred. Please try again or contact an admin."
-          }).catch(() => null);
+          await interaction.editReply({ content: errMsg }).catch(() => null);
         } else {
-          await interaction.reply({
-            content: "❌ An error occurred. Please try again or contact an admin.",
-            ephemeral: true
-          }).catch(() => null);
+          await interaction.reply({ content: errMsg, ephemeral: true }).catch(() => null);
         }
       } catch (replyError) {
         console.error("Failed to send error reply:", replyError);
