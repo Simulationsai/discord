@@ -343,10 +343,7 @@ async function handleVerifyInteraction(interaction) {
         expiresAt
       });
 
-      // Clean up expired CAPTCHAs
-      setTimeout(() => {
-        captchaStore.delete(interaction.user.id);
-      }, timeoutMs);
+      setTimeout(() => captchaStore.delete(interaction.user.id), timeoutMs);
 
       const modal = new ModalBuilder()
         .setCustomId(CUSTOM_IDS.CAPTCHA_MODAL)
@@ -358,11 +355,19 @@ async function handleVerifyInteraction(interaction) {
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(10)
-        .setPlaceholder("Enter the answer");
+        .setPlaceholder("Number only");
 
       modal.addComponents(new ActionRowBuilder().addComponents(answerInput));
 
-      await interaction.showModal(modal);
+      try {
+        await interaction.showModal(modal);
+      } catch (modalError) {
+        console.error("Show modal error:", modalError);
+        await interaction.reply({
+          content: "❌ Could not open verification. Please try again.",
+          ephemeral: true
+        }).catch(() => null);
+      }
       return;
     }
 
@@ -428,14 +433,16 @@ async function completeVerification(interaction, guild, member) {
 }
 
 async function handleCaptchaModalSubmit(interaction) {
+  // Defer immediately so Discord gets a response within 3 seconds
+  await interaction.deferReply({ ephemeral: true }).catch(() => null);
+
   try {
     const guild = interaction.guild;
     const member = interaction.member;
 
     if (!guild || !member) {
-      await interaction.reply({
-        content: "❌ Error: Could not find server or member information.",
-        ephemeral: true
+      await interaction.editReply({
+        content: "❌ Error: Could not find server or member information."
       }).catch(() => null);
       return;
     }
@@ -444,9 +451,8 @@ async function handleCaptchaModalSubmit(interaction) {
     const captchaData = captchaStore.get(interaction.user.id);
 
     if (!captchaData) {
-      await interaction.reply({
-        content: "❌ CAPTCHA expired. Please click Verify Me again.",
-        ephemeral: true
+      await interaction.editReply({
+        content: "❌ CAPTCHA expired. Please click Verify Me again."
       }).catch(() => null);
       return;
     }
@@ -454,45 +460,32 @@ async function handleCaptchaModalSubmit(interaction) {
     // Check if expired
     if (Date.now() > captchaData.expiresAt) {
       captchaStore.delete(interaction.user.id);
-      await interaction.reply({
-        content: "❌ CAPTCHA expired. Please click Verify Me again.",
-        ephemeral: true
+      await interaction.editReply({
+        content: "❌ CAPTCHA expired. Please click Verify Me again."
       }).catch(() => null);
       return;
     }
 
     // Validate answer
     const expectedAnswer = String(captchaData.answer);
-    const providedAnswer = String(userAnswer).replace(/\s+/g, "");
+    const providedAnswer = String(userAnswer || "").replace(/\s+/g, "");
 
     if (providedAnswer !== expectedAnswer) {
       captchaStore.delete(interaction.user.id);
-      await interaction.reply({
-        content: `❌ Incorrect answer. The answer to "${captchaData.question}" was ${expectedAnswer}. Please try again.`,
-        ephemeral: true
+      await interaction.editReply({
+        content: `❌ Incorrect. The answer to "${captchaData.question}" was **${expectedAnswer}**. Click Verify Me to try again.`
       }).catch(() => null);
       return;
     }
 
-    // CAPTCHA correct - complete verification
+    // CAPTCHA correct - complete verification (interaction already deferred)
     captchaStore.delete(interaction.user.id);
     await completeVerification(interaction, guild, member);
   } catch (error) {
     console.error("Error in handleCaptchaModalSubmit:", error);
-    try {
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply({
-          content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again.`
-        }).catch(() => null);
-      } else {
-        await interaction.reply({
-          content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again.`,
-          ephemeral: true
-        }).catch(() => null);
-      }
-    } catch (replyError) {
-      console.error("Failed to reply to CAPTCHA interaction:", replyError);
-    }
+    await interaction.editReply({
+      content: `❌ Verification failed: ${error.message || "Unknown error"}. Please try again.`
+    }).catch(() => null);
   }
 }
 
