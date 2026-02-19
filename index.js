@@ -805,7 +805,11 @@ async function runSetup(guild, actorTag = "system") {
   async function ensureTextChannel({ name, parent, overwrites }) {
     const existing =
       guild.channels.cache.find((c) => c.isTextBased?.() && c.name === name && c.parentId === parent.id) || null;
-    if (existing) return existing;
+    if (existing) {
+      // Update overwrites so Admin/Mod-only actions apply (e.g. edit channel, add members)
+      await existing.permissionOverwrites.set(overwrites).catch(() => null);
+      return existing;
+    }
     return await guild.channels.create({
       name,
       type: 0,
@@ -826,49 +830,55 @@ async function runSetup(guild, actorTag = "system") {
   const allowView = PermissionFlagsBits.ViewChannel;
   const denyView = PermissionFlagsBits.ViewChannel;
   const denySend = PermissionFlagsBits.SendMessages;
+  // Only Admin/Mod can edit channel or add members/roles
+  const denyManage = [
+    PermissionFlagsBits.ManageChannels,
+    PermissionFlagsBits.ManageRoles,
+    PermissionFlagsBits.CreateInstantInvite
+  ];
 
   const welcomeOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: verifiedId, allow: [allowView], deny: [denySend] },
-    { id: unverifiedId, allow: [allowView], deny: [denySend] },
+    { id: verifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
+    { id: unverifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
     { id: adminId, allow: [allowView] },
     { id: modId, allow: [allowView] }
   ];
 
   const verifyOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: verifiedId, allow: [allowView], deny: [denySend] },
-    { id: unverifiedId, allow: [allowView], deny: [denySend] },
+    { id: verifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
+    { id: unverifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
     { id: adminId, allow: [allowView] },
     { id: modId, allow: [allowView] }
   ];
 
   const regOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: verifiedId, allow: [allowView], deny: [denySend] },
+    { id: verifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
     { id: adminId, allow: [allowView] },
     { id: modId, allow: [allowView] }
   ];
 
   const announceOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: earlyId, allow: [allowView], deny: [denySend] },
-    { id: waitId, allow: [allowView], deny: [denySend] },
+    { id: earlyId, allow: [allowView], deny: [denySend, ...denyManage] },
+    { id: waitId, allow: [allowView], deny: [denySend, ...denyManage] },
     { id: adminId, allow: [allowView] },
     { id: modId, allow: [allowView] }
   ];
 
   const communityOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: earlyId, allow: [allowView] },
-    { id: waitId, allow: [allowView] },
+    { id: earlyId, allow: [allowView], deny: denyManage },
+    { id: waitId, allow: [allowView], deny: denyManage },
     { id: adminId, allow: [allowView] },
     { id: modId, allow: [allowView] }
   ];
 
   const earlyOnlyOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: earlyId, allow: [allowView] },
+    { id: earlyId, allow: [allowView], deny: denyManage },
     { id: adminId, allow: [allowView] },
     { id: modId, allow: [allowView] }
   ];
