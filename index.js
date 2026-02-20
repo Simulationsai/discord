@@ -827,10 +827,13 @@ async function runSetup(guild, actorTag = "system") {
   const catEarly = await ensureCategory("Early Access");
   const catModeration = await ensureCategory("Moderation");
 
-  const allowView = PermissionFlagsBits.ViewChannel;
+  // ViewChannel + ReadMessageHistory so messages actually load (fixes "Messages Failed To Load")
+  const allowViewAndRead = [
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.ReadMessageHistory
+  ];
   const denyView = PermissionFlagsBits.ViewChannel;
   const denySend = PermissionFlagsBits.SendMessages;
-  // Only Admin/Mod can edit channel or add members/roles
   const denyManage = [
     PermissionFlagsBits.ManageChannels,
     PermissionFlagsBits.ManageRoles,
@@ -839,54 +842,54 @@ async function runSetup(guild, actorTag = "system") {
 
   const welcomeOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: verifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: unverifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: verifiedId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: unverifiedId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const verifyOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: verifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: unverifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: verifiedId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: unverifiedId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const regOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: verifiedId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: verifiedId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const announceOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: earlyId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: waitId, allow: [allowView], deny: [denySend, ...denyManage] },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: earlyId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: waitId, allow: allowViewAndRead, deny: [denySend, ...denyManage] },
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const communityOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: earlyId, allow: [allowView], deny: denyManage },
-    { id: waitId, allow: [allowView], deny: denyManage },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: earlyId, allow: allowViewAndRead, deny: denyManage },
+    { id: waitId, allow: allowViewAndRead, deny: denyManage },
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const earlyOnlyOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: earlyId, allow: [allowView], deny: denyManage },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: earlyId, allow: allowViewAndRead, deny: denyManage },
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const modOverwrites = [
     { id: everyone.id, deny: [denyView] },
-    { id: adminId, allow: [allowView] },
-    { id: modId, allow: [allowView] }
+    { id: adminId, allow: allowViewAndRead },
+    { id: modId, allow: allowViewAndRead }
   ];
 
   const chWelcome = await ensureTextChannel({ name: "welcome", parent: catWelcome, overwrites: welcomeOverwrites });
