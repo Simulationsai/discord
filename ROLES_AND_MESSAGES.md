@@ -1,24 +1,28 @@
 # Roles & Error Messages
 
-## 1. Why can users assign roles to themselves?
+## 1. Why do users see "+" to add roles? (Only Admin/Mod should assign roles)
 
-If members can change their own roles (e.g. add/remove Verified, Waitlist, Early Access), it's due to **Discord server settings**, not the bot.
+The **"+" next to roles** on a user profile (e.g. Verified, Waitlist, Early Access) is controlled only by **Discord server settings**. The bot cannot remove it — you must change this in Discord.
 
-### Fix: Disable self-assignable roles
+### Fix: Turn OFF member-selectable roles (exact steps)
 
-1. Open your server → **Server Settings** (right-click server name).
-2. Go to **Roles**.
-3. Find the setting **"Allow members to choose their own roles"** or **"Display role members separately"** and the list of roles that members can assign.
-4. **Turn OFF** "Allow members to choose their own roles"  
-   **OR** remove **Verified**, **Unverified**, **Waitlist**, **Early Access**, **Form Submitted** from the list of roles members can assign.
-5. Save.
+1. **Right‑click your server name** ("The System") → **Server Settings**.
+2. In the left sidebar, click **Roles**.
+3. At the **top** of the Roles page, look for:
+   - **"Allow members to choose their own roles"** or  
+   - **"Selectable roles"** / **"Role selection"**
+4. **Turn it OFF** (toggle to disabled)  
+   **OR** if you see a **list of roles** that members can assign:
+   - **Remove** these from that list: **Verified**, **Unverified**, **Waitlist**, **Early Access**, **Form Submitted**.
+   - Leave only roles that are safe for members to add (e.g. "Pronouns", "Region" — if you use them). Do **not** allow THE SYSTEM roles.
+5. **Save** / close settings.
 
-Only **Admin** and **Moderator** (and the bot) should be able to assign or remove these roles. The bot assigns them automatically (verify button, form submission, XP promotion). No member should be able to give themselves Verified or Early Access.
+After this, the **"+" to add roles** will no longer appear for Verified / Waitlist / Early Access. Only people with **Manage Roles** (Admin/Mod) or the **bot** will be able to assign or remove those roles.
 
 ### Also check
 
-- **Server Settings → Roles → @everyone**: ensure **Manage Roles** is **OFF** for @everyone.
-- Only **Admin** (or roles you use for staff) should have **Manage Roles** or **Administrator**.
+- **Server Settings → Roles → @everyone**: **Manage Roles** must be **OFF**.
+- Only **Admin** and **Moderator** (and the bot) should have **Manage Roles** or **Administrator**.
 
 ---
 

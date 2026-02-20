@@ -43,9 +43,11 @@ Follow this **once**. After that, the bot and server should run without repeated
 
 ---
 
-## 5. Lock down roles (one time)
+## 5. Lock down roles — only Admin/Mod can assign (one time)
 
-1. **Server Settings** → **Roles**.
+**If users see a "+" to add roles on profiles, turn this off:**
+
+1. **Right‑click server name** → **Server Settings** → **Roles**.
 2. Turn **OFF** “Allow members to choose their own roles” (or remove Verified / Waitlist / Early Access / etc. from the list).
 3. Ensure **@everyone** does **not** have **Manage Roles**.
 4. Only **Admin** / **Moderator** (and the bot) should assign the system roles.
